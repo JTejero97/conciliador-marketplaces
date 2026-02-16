@@ -1,4 +1,3 @@
-import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 
@@ -829,4 +828,198 @@ export const generateCSVContent = (rows: ProcessedRow[], totals: ProcessedRow): 
 export const formatCurrency = (val: number) => {
   return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(val);
 };
-                                       
+   import { CSVData, ProcessedRow } from '../types';
+
+export const processTransactions = (data: CSVData): ProcessedRow[] => {
+  const { headers, rows } = data;
+
+  // Helper to find column index by name (case insensitive)
+  const getIndex = (name: string) => headers.findIndex(h => h.toLowerCase().trim() === name.toLowerCase());
+
+  const idx = {
+    orderItemId: getIndex('Order Item ID'),
+    transactionType: getIndex('Transaction Type'),
+    orderId: getIndex('Order ID'),
+    payoutDate: getIndex('Payout / Refund Date'),
+    sellingPlatform: getIndex('Selling platform'),
+    amount: getIndex('Amount'),
+    feeName: getIndex('Fee Name'),
+  };
+
+  // Validate critical columns exist
+  if (idx.orderItemId === -1 || idx.transactionType === -1 || idx.amount === -1 || idx.feeName === -1) {
+    console.warn("Faltan columnas críticas en el CSV.");
+    return [];
+  }
+
+  // Pandas groupby replacement: Map<Key, AggregatedObject>
+  const groups = new Map<string, ProcessedRow>();
+
+  rows.forEach((row) => {
+    if (row.length < headers.length) return;
+
+    const orderItemId = row[idx.orderItemId] || '';
+    const transactionType = row[idx.transactionType] || '';
+    
+    // Key based on: ['Order Item ID', 'Transaction Type']
+    const key = `${orderItemId}|${transactionType}`;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        id: key,
+        orderItemId,
+        transactionType,
+        orderId: idx.orderId !== -1 ? row[idx.orderId] : '',
+        payoutDate: idx.payoutDate !== -1 ? row[idx.payoutDate] : '',
+        sellingPlatform: idx.sellingPlatform !== -1 ? row[idx.sellingPlatform] : '',
+        totalFactura: 0,
+        commission: 0,
+        shippingFee: 0,
+        returnShippingFee: 0,
+        total: 0,
+        retentionFlag: 0,
+        retainedAmount: 0,
+        netTotal: 0
+      });
+    }
+
+    const currentGroup = groups.get(key)!;
+    const amountStr = idx.amount !== -1 ? row[idx.amount] : '0';
+    const amount = parseFloat(amountStr) || 0;
+    const feeName = idx.feeName !== -1 ? row[idx.feeName]?.trim() : '';
+
+    if (['Item Price Credit', 'Reversal Item Price', 'Reversal Item Price Subsidy'].includes(feeName)) {
+      currentGroup.totalFactura += amount;
+    }
+
+    if (['Commission', 'Reversal Commission'].includes(feeName)) {
+      currentGroup.commission += amount;
+    }
+
+    if (feeName === 'Shipping Fee Paid by Seller') {
+      currentGroup.shippingFee += amount;
+    }
+  });
+
+  // Post-processing: Calculate Total, Retention, Net Total
+  const processedRows = Array.from(groups.values()).map(row => {
+    row.total = row.totalFactura + row.commission + row.shippingFee;
+
+    const platform = row.sellingPlatform.toLowerCase().trim();
+    const isMiravia = platform.includes('miravia');
+    
+    row.retentionFlag = isMiravia ? 1 : 0;
+    row.retainedAmount = isMiravia ? row.total * 0.01 : 0;
+    row.netTotal = row.total - row.retainedAmount;
+
+    return row;
+  });
+
+  return processedRows;
+};
+
+export const calculateTotals = (rows: ProcessedRow[]): ProcessedRow => {
+  return rows.reduce((acc, row) => ({
+    ...acc,
+    totalFactura: acc.totalFactura + row.totalFactura,
+    commission: acc.commission + row.commission,
+    shippingFee: acc.shippingFee + row.shippingFee,
+    returnShippingFee: acc.returnShippingFee + row.returnShippingFee,
+    total: acc.total + row.total,
+    retainedAmount: acc.retainedAmount + row.retainedAmount,
+    netTotal: acc.netTotal + row.netTotal,
+    // Just summing retention flag for count if needed, or leave 0
+    retentionFlag: 0 
+  }), {
+    id: 'TOTALS',
+    orderItemId: '',
+    transactionType: '',
+    orderId: 'TOTAL BANCO', // Requirement: "TOTAL BANCO"
+    payoutDate: '',
+    sellingPlatform: '',
+    totalFactura: 0,
+    commission: 0,
+    shippingFee: 0,
+    returnShippingFee: 0,
+    total: 0,
+    retentionFlag: 0,
+    retainedAmount: 0,
+    netTotal: 0
+  } as ProcessedRow);
+};
+
+export const generateCSVContent = (rows: ProcessedRow[], totals: ProcessedRow): string => {
+  // Columns strictly requested
+  const headers = [
+    'Tipo de Transacción', 
+    'ID de Pedido', 
+    'Fecha de pago/reembolso',
+    'Total', 
+    'Total Factura', 
+    'Comisión Marketplace', 
+    'Gastos de envio', 
+    'Paquete de devolución - Gastos de envío', 
+    '1% Retencion', 
+    'Importe Retenido', 
+    'Total Neto', 
+    'Plataforma de Venta'
+  ];
+
+  const escapeCsv = (val: string | number) => {
+    if (val === null || val === undefined) return '';
+    const str = String(val);
+    if (str.includes(',') || str.includes('"') || str.includes('\n')) {
+      return `"${str.replace(/"/g, '""')}"`;
+    }
+    return str;
+  };
+
+  const rowToString = (row: ProcessedRow) => [
+    escapeCsv(row.transactionType),
+    escapeCsv(row.orderId),
+    escapeCsv(row.payoutDate),
+    escapeCsv(row.total.toFixed(2)),
+    escapeCsv(row.totalFactura.toFixed(2)),
+    escapeCsv(row.commission.toFixed(2)),
+    escapeCsv(row.shippingFee.toFixed(2)),
+    escapeCsv(row.returnShippingFee.toFixed(2)),
+    escapeCsv(row.retentionFlag),
+    escapeCsv(row.retainedAmount.toFixed(2)),
+    escapeCsv(row.netTotal.toFixed(2)),
+    escapeCsv(row.sellingPlatform)
+  ].join(',');
+
+  const csvRows = rows.map(rowToString);
+  const totalRow = rowToString(totals);
+
+  return [headers.join(','), ...csvRows, totalRow].join('\n');
+};
+
+export const formatCurrency = (val: number) => {
+  return new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR' }).format(val);
+};
+import { CSVData } from '../types';
+
+export const parseCSV = (content: string, delimiter: string = ','): CSVData => {
+  const lines = content.split(/\r\n|\n/).filter(line => line.trim() !== '');
+  
+  if (lines.length === 0) {
+    return { headers: [], rows: [] };
+  }
+
+  // A simple parsing strategy. For production apps, robust libraries like PapaParse are recommended.
+  // This handles basic commas.
+  const parseLine = (line: string): string[] => {
+    // Basic implementation that doesn't handle complex quoted strings with delimiters inside
+    return line.split(delimiter).map(cell => cell.trim());
+  };
+
+  const headers = parseLine(lines[0]);
+  // Get first 5 rows for preview
+  const rows = lines.slice(1, 6).map(parseLine);
+
+  return {
+    headers,
+    rows
+  };
+};
