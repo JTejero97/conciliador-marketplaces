@@ -138,7 +138,7 @@ export default function App() {
                           -ml-0.5 mr-2 h-5 w-5
                           ${activeTab === 'report' ? 'text-brand-500' : 'text-slate-400 group-hover:text-slate-500'}
                         `} />
-                        📊 Reporte de Conciliación
+                      Reporte de Conciliación
                       </button>
 
                       <button
@@ -154,7 +154,7 @@ export default function App() {
                           -ml-0.5 mr-2 h-5 w-5
                           ${activeTab === 'raw' ? 'text-brand-500' : 'text-slate-400 group-hover:text-slate-500'}
                         `} />
-                        📂 Datos en Bruto
+                         Datos en Bruto
                       </button>
                     </nav>
                   </div>
